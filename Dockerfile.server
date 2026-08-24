@@ -1,0 +1,39 @@
+# Long-running HTTP server image (STAGE 4 alternative / STAGE 8 local stack).
+# Use this for ECS/EC2/Kubernetes; use Dockerfile for Lambda.
+
+FROM python:3.12-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl unzip ca-certificates \
+    && curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip \
+    && unzip -q /tmp/awscliv2.zip -d /tmp \
+    && /tmp/aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli \
+    && rm -rf /tmp/awscliv2.zip /tmp/aws \
+    && apt-get purge -y unzip && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/* \
+    && aws --version
+
+WORKDIR /app
+
+COPY requirements.txt requirements-server.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-server.txt
+
+COPY agent/ ./agent/
+COPY knowledge/ ./knowledge/
+
+# Run unprivileged. The agent needs no write access to anything but its state dir.
+RUN useradd --create-home --uid 10001 agent \
+    && mkdir -p /var/agent-state && chown agent:agent /var/agent-state
+USER agent
+
+ENV AGENT_STATE_DIR=/var/agent-state \
+    AGENT_APPROVAL_MODE=deny \
+    AGENT_JSON_LOGS=true \
+    PYTHONUNBUFFERED=1
+
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
+    CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/health').read()" || exit 1
+
+ENTRYPOINT ["python", "-m", "agent"]
+CMD ["serve", "--host", "0.0.0.0", "--port", "8080"]

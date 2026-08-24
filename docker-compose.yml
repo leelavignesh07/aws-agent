@@ -1,0 +1,23 @@
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    image: aws-monitoring-agent:local
+    ports:
+      - "8080:8080"
+    environment:
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in .env}
+      AGENT_API_TOKEN: ${AGENT_API_TOKEN:?set AGENT_API_TOKEN in .env}
+      AGENT_APPROVAL_MODE: deny
+      AGENT_MODEL: ${AGENT_MODEL:-claude-opus-5}
+    volumes:
+      # Read-only mount of your AWS credentials. The agent's IAM permissions are
+      # what actually constrain it — mount a read-only profile.
+      - ${HOME}/.aws:/home/agent/.aws:ro
+      - agent-state:/var/agent-state
+    restart: unless-stopped
+
+volumes:
+  agent-state:

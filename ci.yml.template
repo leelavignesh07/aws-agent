@@ -1,0 +1,73 @@
+# CI for the AWS monitoring agent.
+#
+# This lives here rather than at .github/workflows/ci.yml because pushing to
+# that path needs a token with the `workflow` OAuth scope, which the token that
+# seeded this repository did not have. To enable it:
+#
+#   mkdir -p .github/workflows
+#   cp ci.yml.template .github/workflows/ci.yml
+#   git add .github/workflows && git commit -m "Add CI workflow" && git push
+#
+# (Push from a client authorized for the `workflow` scope, or add the file
+# through the GitHub web UI.)
+#
+# It needs no secrets: the test suite stubs the AWS CLI and never calls Claude.
+
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt -r requirements-server.txt httpx
+
+      - name: Lint
+        run: ruff check agent tests
+
+      - name: Format check
+        run: ruff format --check agent tests
+
+      - name: Tests
+        run: pytest tests -q
+
+      - name: Prove the write boundary still holds
+        run: pytest tests/test_guard.py -q
+
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deploy/terraform
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false
+      - run: terraform validate
+
+  docker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the Lambda image
+        run: docker build -t aws-monitoring-agent:ci .
+      - name: Confirm the AWS CLI is in the image
+        run: docker run --rm --entrypoint aws aws-monitoring-agent:ci --version

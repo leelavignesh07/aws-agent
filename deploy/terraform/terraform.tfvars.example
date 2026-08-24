@@ -1,0 +1,20 @@
+# Copy to terraform.tfvars and edit.
+
+project_name = "aws-monitoring-agent"
+aws_region   = "us-east-1"
+
+# Leave anthropic_api_key empty and set the secret value out-of-band instead:
+#   aws secretsmanager put-secret-value \
+#     --secret-id aws-monitoring-agent/anthropic-api-key \
+#     --secret-string "sk-ant-..."
+# anthropic_api_key = ""
+
+# Or point at a secret you already manage:
+# anthropic_secret_arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:my-key-AbCdEf"
+
+agent_model   = "claude-opus-5"
+approval_mode = "deny" # no human is watching a Lambda — refuse sensitive reads
+
+enable_schedule     = true
+schedule_expression = "cron(0 7 ? * MON-FRI *)" # 07:00 UTC on weekdays
+report_email        = "" # e.g. "platform-team@example.com"

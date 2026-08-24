@@ -1,0 +1,2 @@
+# Core runtime. Deliberately small: AWS access is the AWS CLI, not an SDK.
+anthropic>=1.0.0,<2.0.0

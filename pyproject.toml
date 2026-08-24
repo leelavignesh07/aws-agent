@@ -1,0 +1,25 @@
+[project]
+name = "aws-monitoring-agent"
+version = "1.0.0"
+description = "Read-only AI agent that reports AWS account status, health and resource counts via the AWS CLI"
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "C4", "SIM"]
+ignore = [
+  "E501",   # line length is handled by the formatter
+  "B008",   # FastAPI dependency defaults are the framework's idiom
+  "SIM108", # ternaries are not always clearer
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
