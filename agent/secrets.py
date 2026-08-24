@@ -14,7 +14,17 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+
+
+def _aws_binary() -> str:
+    """Resolve the CLI the same way `awscli.aws_binary` does.
+
+    Kept local rather than imported: this module runs before anything else is
+    wired up, and deliberately depends on nothing inside the package.
+    """
+    return os.environ.get("AGENT_AWS_BIN", "").strip() or shutil.which("aws") or "aws"
 
 
 def hydrate_api_key() -> bool:
@@ -29,7 +39,7 @@ def hydrate_api_key() -> bool:
     try:
         proc = subprocess.run(  # noqa: S603 - fixed argv, no shell, ARN from deployment config
             [
-                "aws",
+                _aws_binary(),
                 "secretsmanager",
                 "get-secret-value",
                 "--secret-id",
@@ -40,12 +50,12 @@ def hydrate_api_key() -> bool:
                 "text",
                 "--region",
                 region,
-                "--no-cli-pager",
             ],
             capture_output=True,
             text=True,
             timeout=20,
             check=False,
+            env={**os.environ, "AWS_PAGER": ""},
         )
     except (OSError, subprocess.SubprocessError):
         return False

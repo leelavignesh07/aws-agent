@@ -8,10 +8,33 @@ from agent.config import get_config
 
 def test_build_command_pins_output_and_region(fake_aws):
     argv = awscli.build_command("ec2", "describe-instances", ["--max-items", "5"])
-    assert argv[-4:] == ["--output", "json", "--region", "eu-west-1"] or "--no-cli-pager" in argv
-    assert "--output" in argv and "json" in argv
+    assert argv[-4:] == ["--output", "json", "--region", "eu-west-1"]
     assert argv[argv.index("--region") + 1] == "eu-west-1"
-    assert "--no-cli-pager" in argv
+
+
+def test_the_pager_is_disabled_by_environment_not_by_a_flag(fake_aws):
+    """`--no-cli-pager` exists only in CLI v2; the packaged Lambda carries v1."""
+    argv = awscli.build_command("ec2", "describe-instances")
+    assert "--no-cli-pager" not in argv
+    assert awscli.cli_env()["AWS_PAGER"] == ""
+
+
+def test_agent_aws_bin_overrides_path(fake_aws, monkeypatch, tmp_path):
+    """The zip Lambda ships its CLI at /var/task/bin, which is not on PATH."""
+    packaged = tmp_path / "packaged-aws"
+    packaged.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    packaged.chmod(0o755)
+    monkeypatch.setenv("AGENT_AWS_BIN", str(packaged))
+    assert awscli.aws_binary() == str(packaged)
+    assert awscli.build_command("ec2", "describe-instances")[0] == str(packaged)
+
+
+def test_a_bad_agent_aws_bin_is_reported_not_ignored(fake_aws, monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENT_AWS_BIN", str(tmp_path / "nope"))
+    assert awscli.available() is False
+    result = awscli.run("ec2", "describe-instances")
+    assert not result.ok
+    assert "AGENT_AWS_BIN" in result.denied_reason
 
 
 def test_global_endpoint_services_are_pinned_to_us_east_1(fake_aws):

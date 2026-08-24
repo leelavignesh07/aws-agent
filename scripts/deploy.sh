@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
-# Build, push and deploy the agent to AWS Lambda (STAGE 4).
+# Build and deploy the agent to AWS Lambda (STAGE 4). Bash, python, terraform —
+# no Docker anywhere.
 #
-# The ECR repository has to exist before an image can be pushed, and the Lambda
-# needs the image before it can be created — so Terraform runs twice, with the
-# push in between. That ordering is the whole reason this is a script.
+# The package is a plain zip built by scripts/build_lambda.sh, so unlike a
+# container deploy there is no registry to populate first: one terraform apply
+# creates everything and uploads the code in the same pass.
 set -euo pipefail
 
 PROJECT="${1:-aws-monitoring-agent}"
 REGION="${2:-us-east-1}"
-TF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../deploy/terraform" && pwd)"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TAG="$(date -u +%Y%m%d%H%M%S)"
+TF_DIR="${ROOT}/deploy/terraform"
+PACKAGE="${ROOT}/dist/agent-lambda.zip"
 
-for binary in terraform docker aws; do
+export AWS_PAGER=""
+
+for binary in terraform aws; do
   command -v "${binary}" >/dev/null || { echo "${binary} is required but not on PATH" >&2; exit 1; }
 done
 aws sts get-caller-identity --region "${REGION}" >/dev/null || {
@@ -20,30 +23,20 @@ aws sts get-caller-identity --region "${REGION}" >/dev/null || {
   exit 1
 }
 
-TF_ARGS=(-var "aws_region=${REGION}" -var "project_name=${PROJECT}")
+echo "==> [1/3] building the deployment package"
+bash "${ROOT}/scripts/build_lambda.sh"
 
-echo "==> [1/5] terraform init"
+TF_ARGS=(
+  -var "aws_region=${REGION}"
+  -var "project_name=${PROJECT}"
+  -var "lambda_package_path=${PACKAGE}"
+)
+
+echo "==> [2/3] terraform init"
 terraform -chdir="${TF_DIR}" init -input=false
 
-echo "==> [2/5] creating the ECR repository and the secret"
-terraform -chdir="${TF_DIR}" apply -input=false -auto-approve \
-  "${TF_ARGS[@]}" \
-  -target=aws_ecr_repository.agent \
-  -target=aws_secretsmanager_secret.anthropic
-
-REPO_URL="$(terraform -chdir="${TF_DIR}" output -raw ecr_repository_url)"
-REGISTRY="${REPO_URL%%/*}"
-
-echo "==> [3/5] building the image"
-docker build -t "${REPO_URL}:${TAG}" -t "${REPO_URL}:latest" "${ROOT}"
-
-echo "==> [4/5] pushing to ${REPO_URL}"
-aws ecr get-login-password --region "${REGION}" | docker login --username AWS --password-stdin "${REGISTRY}"
-docker push "${REPO_URL}:${TAG}"
-docker push "${REPO_URL}:latest"
-
-echo "==> [5/5] deploying"
-terraform -chdir="${TF_DIR}" apply -input=false -auto-approve "${TF_ARGS[@]}" -var "image_tag=${TAG}"
+echo "==> [3/3] deploying"
+terraform -chdir="${TF_DIR}" apply -input=false -auto-approve "${TF_ARGS[@]}"
 
 SECRET_ARN="$(terraform -chdir="${TF_DIR}" output -raw anthropic_secret_arn)"
 echo ""

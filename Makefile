@@ -15,7 +15,7 @@ PIP       := $(VENV)/bin/pip
 STAMP     := $(VENV)/.installed
 AGENT     := $(PY) -m agent
 TF_DIR    := deploy/terraform
-IMAGE     := aws-monitoring-agent
+DIST      := dist
 PROJECT   ?= aws-monitoring-agent
 REGION    ?= $(shell grep -E '^AWS_REGION=' .env 2>/dev/null | cut -d= -f2)
 REGION    := $(if $(strip $(REGION)),$(strip $(REGION)),us-east-1)
@@ -103,7 +103,7 @@ doctor: $(STAMP) ## Verify this machine is ready (python, CLI, credentials, key)
 
 .PHONY: whoami
 whoami: ## Show which AWS identity the agent is using
-	@aws sts get-caller-identity --output table --no-cli-pager
+	@AWS_PAGER="" aws sts get-caller-identity --output table
 
 # ===========================================================================
 ##@ STAGE 2 — The agent itself
@@ -149,36 +149,38 @@ run-tool: $(STAMP) ## Call one tool directly:  make run-tool TOOL=aws_health INP
 ##@ STAGE 4 — Deploy to AWS
 # ===========================================================================
 
-.PHONY: docker-build
-docker-build: ## Build the Lambda container image
-	@docker build -t $(IMAGE):latest .
-
-.PHONY: docker-build-server
-docker-build-server: ## Build the long-running HTTP server image
-	@docker build -f Dockerfile.server -t $(IMAGE)-server:latest .
+.PHONY: package
+package: ## Build the Lambda deployment zip (bash + python, no Docker)
+	@bash scripts/build_lambda.sh
 
 .PHONY: serve
 serve: setup-server ## Run the HTTP API locally on :8080
 	@$(AGENT) serve --port $${PORT:-8080}
 
-.PHONY: up
-up: ## Run the HTTP API in Docker (reads .env)
-	@docker compose up --build
+.PHONY: serve-bg
+serve-bg: setup-server ## Same, in the background, logging to var/server.log
+	@mkdir -p var
+	@nohup $(AGENT) serve --host $${HOST:-127.0.0.1} --port $${PORT:-8080} \
+		>> var/server.log 2>&1 & echo $$! > var/server.pid
+	@echo "==> serving on $${HOST:-127.0.0.1}:$${PORT:-8080} (pid $$(cat var/server.pid)), logs in var/server.log"
 
-.PHONY: down
-down: ## Stop the Docker stack
-	@docker compose down
+.PHONY: serve-stop
+serve-stop: ## Stop the background HTTP API
+	@if [ -f var/server.pid ]; then \
+		kill $$(cat var/server.pid) 2>/dev/null && echo "==> stopped $$(cat var/server.pid)" || echo "==> not running"; \
+		rm -f var/server.pid; \
+	else echo "==> no var/server.pid — nothing to stop"; fi
 
 .PHONY: tf-init
 tf-init: ## terraform init
 	@cd $(TF_DIR) && terraform init
 
 .PHONY: tf-plan
-tf-plan: tf-init ## Show what deploying would create
+tf-plan: package tf-init ## Show what deploying would create
 	@cd $(TF_DIR) && terraform plan -var="aws_region=$(REGION)" -var="project_name=$(PROJECT)"
 
 .PHONY: deploy
-deploy: ## Build, push and deploy the agent to AWS Lambda
+deploy: ## Package and deploy the agent to AWS Lambda
 	@bash scripts/deploy.sh "$(PROJECT)" "$(REGION)"
 
 .PHONY: invoke
@@ -296,8 +298,8 @@ ci: lint test ## What CI runs: lint + tests
 	@echo "==> CI checks passed"
 
 .PHONY: clean
-clean: ## Remove caches and local state (keeps .env and the venv)
-	@rm -rf .pytest_cache .ruff_cache var/agent.db var/audit.jsonl
+clean: ## Remove caches, build output and local state (keeps .env and the venv)
+	@rm -rf .pytest_cache .ruff_cache $(DIST) var/agent.db var/audit.jsonl var/server.log var/server.pid
 	@find . -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
 	@echo "==> cleaned"
 

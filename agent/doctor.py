@@ -7,7 +7,6 @@ Every check reports pass / warn / fail plus the exact command that fixes it.
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import sys
 from typing import Any
@@ -54,11 +53,19 @@ def run_checks() -> list[dict[str, Any]]:
         )
     )
 
-    aws_path = shutil.which("aws")
+    try:
+        aws_path = awscli.aws_binary()
+    except awscli.AwsCliNotFound:
+        aws_path = ""
     if aws_path:
         try:
             out = subprocess.run(
-                [aws_path, "--version"], capture_output=True, text=True, timeout=20, check=False
+                [aws_path, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+                env=awscli.cli_env(),
             )
             detail = (out.stdout or out.stderr).strip().splitlines()[0]
         except (subprocess.SubprocessError, OSError):

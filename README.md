@@ -42,6 +42,9 @@ checks your machine, and asks the agent its first question. Two things you suppl
 No AWS CLI yet? `make install-awscli`. Then `make doctor` tells you exactly what
 is still missing and the command that fixes it.
 
+Everything here runs on bash and python. Nothing to install beyond Python 3.10+,
+the AWS CLI, and — only if you deploy — Terraform.
+
 ```bash
 make report                                   # full status report
 make ask Q="how many EC2 instances are running, and are any impaired?"
@@ -101,22 +104,39 @@ log reads like a shell history.
 *Code:* `agent/awscli.py`, `agent/tools/`
 
 ### Stage 4 — Deploy the agent to AWS
-`make docker-build` · `make serve` · `make up` · `make tf-plan` · `make deploy` · `make invoke` · `make destroy`
+`make package` · `make serve` · `make tf-plan` · `make deploy` · `make invoke` · `make destroy`
+
+**No Docker anywhere.** The build is bash and python: `scripts/build_lambda.sh`
+pip-installs the dependencies into `dist/lambda/`, copies the agent and the
+runbooks in, and zips it with python's `zipfile`. There is no image, no
+registry and nothing to log in to — so `make deploy` is a single
+`terraform apply` that uploads the code as it goes.
 
 Two deployment shapes from one codebase:
 
-* **Lambda container** (`Dockerfile`, `deploy/terraform/`) — ECR repository,
-  Lambda function with the read-only role, IAM-authenticated Function URL,
-  CloudWatch log group with retention, an EventBridge schedule for the daily
-  report, an SNS topic for delivery, and an alarm on the agent's own failures.
-* **HTTP service** (`Dockerfile.server`, `docker-compose.yml`) — FastAPI on
-  :8080 for ECS/EC2/Kubernetes, bearer-token authenticated, with `/metrics` for
-  Prometheus.
+* **Lambda zip** (`scripts/build_lambda.sh`, `deploy/terraform/`) — Lambda
+  function with the read-only role, IAM-authenticated Function URL, CloudWatch
+  log group with retention, an EventBridge schedule for the daily report, an SNS
+  topic for delivery, and an alarm on the agent's own failures.
+* **HTTP service** (`make serve`) — FastAPI on :8080 for EC2, a systemd unit, or
+  anything else that runs a process; bearer-token authenticated, with `/metrics`
+  for Prometheus. `make serve-bg` / `make serve-stop` run it in the background.
 
-`make deploy` handles the ECR-before-Lambda ordering, pushes a timestamped tag,
-and prints the outputs.
+A Lambda zip has no AWS CLI, and the agent collects everything by shelling out
+to `aws` — so the package carries its own copy: the pip-installable AWS CLI v1,
+plus a `bin/aws` shim, and the function is pointed at it with `AGENT_AWS_BIN`.
+(AWS CLI v2 ships only as a ~270 MB unpacked bundle, over Lambda's 250 MB limit.
+Locally you still want v2: `make install-awscli`.) The finished package is about
+25 MB zipped and 145 MB unpacked, and the script fails the build if either
+number crosses a Lambda limit.
 
-*Code:* `agent/server.py`, `agent/lambda_handler.py`, `deploy/`, `scripts/deploy.sh`
+Compiled wheels are cross-built with pip's `--platform` / `--python-version`, so
+the package is correct for Lambda's `linux/x86_64` even when you build it on a
+Mac. `ARCH=arm64 make package` builds for Graviton — set
+`lambda_architecture = "arm64"` in `terraform.tfvars` to match.
+
+*Code:* `agent/server.py`, `agent/lambda_handler.py`, `deploy/`,
+`scripts/build_lambda.sh`, `scripts/deploy.sh`
 
 ### Stage 5 — DevOps capabilities
 `make report` · `make report-full` · `make cost` · `make logs` · `make security` · `make triage`
@@ -150,13 +170,13 @@ boundary rather than trust it.
 ### Stage 8 — Production-grade platform
 `make test` · `make lint` · `make ci` · `make clean`
 
-144 tests, none of which need AWS credentials or network access (a fake `aws`
+135 tests, none of which need AWS credentials or network access (a fake `aws`
 binary stands in). Ruff for lint and format. Structured JSON logging, Prometheus
-metrics, a CloudWatch alarm on the agent itself, log retention, ECR image
-scanning, and a GitHub Actions workflow in `ci.yml.template` that runs lint,
-format, tests, `terraform validate` and a Docker build (copy it to
-`.github/workflows/ci.yml` to enable it — see the header for why it ships as a
-template).
+metrics, a CloudWatch alarm on the agent itself, log retention, and a GitHub
+Actions workflow in `ci.yml.template` that runs lint, format, tests,
+`terraform validate` and a package build (copy it to `.github/workflows/ci.yml`
+to enable it — see the header for why it ships as a template). CI needs no
+Docker either: it builds the same zip `make deploy` does.
 
 ---
 
@@ -214,6 +234,7 @@ Everything lives in `.env` (see `.env.example` for the annotated list).
 | `AGENT_MAX_ITERATIONS` | `24` | Tool-loop budget per question |
 | `AWS_REGION` | `us-east-1` | Region the agent inspects |
 | `AWS_PROFILE` | — | Empty uses the default credential chain |
+| `AGENT_AWS_BIN` | — | Path to `aws`; empty means "find it on PATH" |
 | `AGENT_APPROVAL_MODE` | `ask` | `ask` / `deny` / `allow` |
 | `AGENT_CACHE_TTL` | `60` | Seconds an identical read is reused |
 | `AGENT_CLI_TIMEOUT` | `90` | Per-call timeout |
@@ -232,8 +253,8 @@ Override per invocation: `make ask Q="..." REGION=eu-west-1`.
   usage. Lower it with `AGENT_EFFORT=medium` or `AGENT_MODEL=claude-sonnet-5`.
 * **AWS** — the read calls are free, with one exception: Cost Explorer charges
   about $0.01 per `get-cost-and-usage` request, so `make cost` is not free.
-* **Deployed** — Lambda for a weekday report is cents per month; the ECR
-  repository keeps 10 images; logs expire after 30 days by default.
+* **Deployed** — Lambda for a weekday report is cents per month; the code is a
+  25 MB zip stored with the function; logs expire after 30 days by default.
 
 ---
 
@@ -248,6 +269,8 @@ Override per invocation: `make ask Q="..." REGION=eu-west-1`.
 | Sensitive read refused in CI | Expected. `AGENT_APPROVAL_MODE=deny` is the correct server default |
 | `AGENT_API_TOKEN is not set` | `make serve` needs a token: `openssl rand -hex 32` |
 | Cost Explorer returns an error | Enable Cost Explorer once in the console; it takes ~24h to populate |
+| `make package` fails on a size limit | A dependency grew. Trim `requirements.txt`, or upload the zip through S3 |
+| Deployed agent says `aws` is not on PATH | Rebuild and redeploy with `make deploy` — the zip carries its own CLI at `/var/task/bin/aws` |
 
 ---
 
@@ -287,8 +310,12 @@ Override per invocation: `make ask Q="..." REGION=eu-west-1`.
 │   └── tools/                STAGE 3/5  the tools themselves
 ├── deploy/
 │   ├── iam/                  read-only policy + trust policies
-│   └── terraform/            ECR, Lambda, IAM, schedule, alarms
+│   └── terraform/            Lambda, IAM, schedule, alarms
 ├── knowledge/                runbooks the agent can cite
-├── scripts/                  install, deploy, invoke
-└── tests/                    144 tests, no AWS required
+├── scripts/
+│   ├── install_awscli.sh     STAGE 1  AWS CLI v2 into ~/.local
+│   ├── build_lambda.sh       STAGE 4  the deployment zip — bash + python
+│   ├── deploy.sh             STAGE 4  package, then terraform apply
+│   └── invoke.sh             STAGE 4  call the deployed function
+└── tests/                    135 tests, no AWS required
 ```

@@ -1,10 +1,10 @@
-output "ecr_repository_url" {
-  description = "Push the agent image here."
-  value       = aws_ecr_repository.agent.repository_url
-}
-
 output "lambda_function_name" {
   value = aws_lambda_function.agent.function_name
+}
+
+output "lambda_package" {
+  description = "The zip that was deployed. Rebuild it with `make package`."
+  value       = local.lambda_package
 }
 
 output "function_url" {
