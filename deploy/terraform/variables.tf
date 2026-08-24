@@ -10,10 +10,27 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
-variable "image_tag" {
-  description = "Container image tag to deploy. `make deploy` pushes and sets this."
+variable "lambda_package_path" {
+  description = "Path to the deployment zip built by scripts/build_lambda.sh. Empty uses dist/agent-lambda.zip at the repo root."
   type        = string
-  default     = "latest"
+  default     = ""
+}
+
+variable "lambda_runtime" {
+  description = "Lambda Python runtime. Must match PY_VERSION in scripts/build_lambda.sh."
+  type        = string
+  default     = "python3.12"
+}
+
+variable "lambda_architecture" {
+  description = "Lambda architecture. Must match ARCH in scripts/build_lambda.sh."
+  type        = string
+  default     = "x86_64"
+
+  validation {
+    condition     = contains(["x86_64", "arm64"], var.lambda_architecture)
+    error_message = "lambda_architecture must be x86_64 or arm64."
+  }
 }
 
 variable "anthropic_secret_name" {
@@ -53,7 +70,7 @@ variable "approval_mode" {
 }
 
 variable "lambda_memory_mb" {
-  description = "Lambda memory. The AWS CLI in the image needs headroom; 1024 is a sane floor."
+  description = "Lambda memory. The bundled AWS CLI needs headroom; 1024 is a sane floor."
   type        = number
   default     = 1024
 }

@@ -12,6 +12,7 @@ no string that could be re-interpreted as a second command.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -74,10 +75,32 @@ def clear_cache() -> None:
 
 
 def aws_binary() -> str:
+    """Locate the `aws` executable.
+
+    AGENT_AWS_BIN wins when it is set: the Lambda package ships its own copy of
+    the CLI at /var/task/bin/aws, which is not on PATH.
+    """
+    override = os.environ.get("AGENT_AWS_BIN", "").strip()
+    if override:
+        if os.path.isfile(override) and os.access(override, os.X_OK):
+            return override
+        raise AwsCliNotFound(f"AGENT_AWS_BIN={override} is not an executable file")
     path = shutil.which("aws")
     if not path:
         raise AwsCliNotFound("the `aws` CLI is not on PATH — run `make setup` (or install AWS CLI v2) first")
     return path
+
+
+def cli_env() -> dict[str, str]:
+    """Environment for every CLI invocation.
+
+    An empty AWS_PAGER is how you turn the pager off on both major CLI versions.
+    The `--no-cli-pager` flag would do it for v2 only, and the Lambda package
+    carries v1 (the pip-installable one) because v2 does not fit in a zip.
+    """
+    env = dict(os.environ)
+    env["AWS_PAGER"] = ""
+    return env
 
 
 # Services whose API endpoint only exists in one region. The CLI would build an
@@ -109,7 +132,7 @@ def build_command(
     if service != "s3":  # the high-level `s3 ls` command has no --output json
         argv += ["--output", "json"]
     effective = region or GLOBAL_ENDPOINT_REGIONS.get(service) or cfg.region
-    argv += ["--region", effective, "--no-cli-pager"]
+    argv += ["--region", effective]
     return argv
 
 
@@ -171,6 +194,7 @@ def run(
             text=True,
             timeout=cfg.cli_timeout,
             check=False,
+            env=cli_env(),
         )
     except subprocess.TimeoutExpired:
         result = CliResult(
@@ -220,4 +244,8 @@ def caller_identity() -> CliResult:
 
 
 def available() -> bool:
-    return shutil.which("aws") is not None
+    try:
+        aws_binary()
+    except AwsCliNotFound:
+        return False
+    return True

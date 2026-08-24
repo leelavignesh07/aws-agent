@@ -11,7 +11,8 @@
 # (Push from a client authorized for the `workflow` scope, or add the file
 # through the GitHub web UI.)
 #
-# It needs no secrets: the test suite stubs the AWS CLI and never calls Claude.
+# It needs no secrets: the test suite stubs the AWS CLI and never calls Claude,
+# and the package build is plain bash + python — no Docker, no registry login.
 
 name: ci
 
@@ -62,12 +63,31 @@ jobs:
       - run: terraform init -backend=false
       - run: terraform validate
 
-  docker:
+  package:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
-      - name: Build the Lambda image
-        run: docker build -t aws-monitoring-agent:ci .
-      - name: Confirm the AWS CLI is in the image
-        run: docker run --rm --entrypoint aws aws-monitoring-agent:ci --version
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the Lambda deployment package
+        run: scripts/build_lambda.sh
+
+      - name: Confirm the package carries a working AWS CLI
+        run: |
+          test -x dist/lambda/bin/aws
+          dist/lambda/bin/aws --version
+
+      - name: Confirm the zip has what Lambda will look for
+        run: |
+          python - <<'PY'
+          import sys, zipfile
+          names = set(zipfile.ZipFile("dist/agent-lambda.zip").namelist())
+          missing = [n for n in ("bin/aws", "agent/lambda_handler.py", "knowledge/runbooks.md") if n not in names]
+          if missing:
+              sys.exit(f"missing from the package: {missing}")
+          print(f"{len(names)} entries, all expected paths present")
+          PY

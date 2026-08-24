@@ -17,7 +17,7 @@ import os
 import subprocess
 from typing import Any
 
-from . import audit, reports
+from . import audit, awscli, reports
 from .config import get_config
 from .llm import LLMUnavailable
 from .loop import ask as agent_ask
@@ -41,11 +41,15 @@ def _publish_report(text: str, summary: dict[str, Any]) -> dict[str, Any]:
     topic = os.environ.get("REPORT_TOPIC_ARN", "").strip()
     if not topic:
         return {"published": False, "reason": "REPORT_TOPIC_ARN not set"}
+    try:
+        binary = awscli.aws_binary()
+    except awscli.AwsCliNotFound as exc:
+        return {"published": False, "reason": str(exc)}
     cfg = get_config()
     subject = f"AWS status {cfg.region}: {summary.get('overall_health', 'unknown')}"[:99]
     proc = subprocess.run(  # noqa: S603 - argv list, no shell
         [
-            "aws",
+            binary,
             "sns",
             "publish",
             "--topic-arn",
@@ -56,12 +60,12 @@ def _publish_report(text: str, summary: dict[str, Any]) -> dict[str, Any]:
             text[:250_000],
             "--region",
             cfg.region,
-            "--no-cli-pager",
         ],
         capture_output=True,
         text=True,
         timeout=60,
         check=False,
+        env=awscli.cli_env(),
     )
     audit.record("report_published", topic=topic, ok=proc.returncode == 0)
     return {"published": proc.returncode == 0, "error": proc.stderr.strip()[:300] or None}
